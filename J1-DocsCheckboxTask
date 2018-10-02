@@ -1,0 +1,172 @@
+/* 
+Задача - создать обработчик нажатия на чекбоксы в списке
+По нажатию, переносить документы в другую таблицу бд
+Следить за количеством элементов в списке
+Обновлять чекбоксы
+При нажатии на кнопку выделить все - выделять все чекбоксы
+*/
+
+define([
+    "funcs",
+    "apps/Form/BaseTask",
+    "classes/api/Api"
+], function(f, BaseTask, Api) {
+    "use strict";
+
+    let LIST_DOCUMENTS = RowsStorage.get("LIST_DOCUMENTS");
+    const CHECKEDDEFAULT = true; // true или false по умолчанию. При смене, нужно поменять в бд значение по умолчанию.
+
+    let DocsCheckboxTask = BaseTask.extend("DocsCheckboxTask", {
+
+        elems: ["docs", "selectAll", "unSelectAll"],
+
+        getItems(callback) {
+            LIST_DOCUMENTS.get({
+                columns: ["COPY_TO_ORDER"],
+                filter: {
+                    isThisCompanyCRM: {
+                        key: "TABLE_ID",
+                        type: "equal",
+                        value: this.companyCrmId
+                    },
+                    isCompanyCRM: {
+                        key: "TABLE_NAME",
+                        type: "equal",
+                        value: "COMPANY_CRM"
+                    }
+                }
+            }, (err, models) => {
+                models.forEach( (model) => {
+                    (model.attributes.COPY_TO_ORDER === 1) ?
+                        this.items.push({id: +model.attributes.ID, checked: true}) :
+                        this.items.push({id: +model.attributes.ID, checked: false});
+                });
+                callback(null, this.items);
+            });
+        },
+
+        onBeforeInitDocs(elemParams) {
+            this.items = [];
+            this.checked = {};
+            this.companyCrmId = this.form.model.id;
+            elemParams.plugins.forEach((plugin) => {
+                if ( !f.isObject(plugin) ) {
+                    return;
+                }
+
+                if ( plugin.name != "Checkbox" ) {
+                    return;
+                }
+
+                if ( !plugin.params ) {
+                    plugin.params = {};
+                }
+
+                plugin.params.checked = this.checked;
+            });
+        },
+        onInitDocs() {
+            this.getItems((err, items) => {
+                items.forEach((item) => {
+                    if(item.checked === true) this.checked[ item.id ] = true;
+                });
+            });
+        },
+
+        onRenderDocs() {
+            this.grid = this.elems.docs.grid;
+            let selectAllBtn = this.elems.selectAll;
+            let unSelectAllBtn = this.elems.unSelectAll;
+            this.listenTo(this.grid, "plugin.Checkbox:change", this.onChangeCheckbox.bind(this));
+            this.listenTo(this.grid, "remove", this.onRemoveItem.bind(this));
+            this.listenTo(this.grid, "create", this.onCreateItem.bind(this));
+            this.listenTo(selectAllBtn, "click", this.onClickSelectAllBtn.bind(this));
+            this.listenTo(unSelectAllBtn, "click", this.onClickUnSelectAllBtn.bind(this));
+        },
+
+        onChangeCheckbox(e) {
+            let changes = {};
+            changes[ e.column ] = e.state;
+            this.setState(e.model.id, changes);
+        },
+
+        onRemoveItem(id) {
+            this.items.forEach( (item) => {
+                if(item.id === id) {
+                    this.items.splice(this.items.indexOf(item), 1);
+                }
+            });
+            delete this.checked[id];
+        },
+
+        onCreateItem(model) {
+            let id = +model.attributes.ID;
+            this.items.push({id: id, checked: CHECKEDDEFAULT});
+            this.checked[id] = CHECKEDDEFAULT;
+            this.updateSelected();
+        },
+
+        onClickSelectAllBtn() {
+            Api.request({
+                root: "customlogic",
+                entity: "documents",
+                method: "updateCopyToOrder",
+                data: {
+                    copyToOrder: 1,
+                    tableId: this.companyCrmId
+                }
+            }, (err) => {
+                if (err == null) {
+                    this.items.forEach((item) => {
+                        item.checked = true;
+                        this.checked[ item.id ] = true;
+                    });
+                    this.updateSelected();
+                }
+                else {
+                    throw new Error("Ошибка обновления данных");
+                }
+            });
+        },
+
+        onClickUnSelectAllBtn() {
+            Api.request({
+                root: "customlogic",
+                entity: "documents",
+                method: "updateCopyToOrder",
+                data: {
+                    copyToOrder: 0,
+                    tableId: this.companyCrmId
+                }
+            }, (err) => {
+                if (err == null) {
+                    this.items.forEach((item) => {
+                        item.checked = false;
+                    });
+                    this.checked = {};
+                    this.updateSelected();
+                }
+                else {
+                    throw new Error("Ошибка обновления данных");
+                }
+            });
+        },
+
+        updateSelected() {
+            let checkbox = this.grid.plugins.Checkbox;
+            if ( !f.isObject(checkbox) ) {
+                return;
+            }
+            checkbox.checked = this.checked;
+            this.grid.renderRows();
+        },
+
+        setState(id, changes) {
+            LIST_DOCUMENTS.update(id, {
+                COPY_TO_ORDER: changes.check ? 1 : 0
+            });
+        }
+    });
+
+    return DocsCheckboxTask;
+});
